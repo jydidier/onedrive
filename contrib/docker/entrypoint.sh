@@ -23,8 +23,6 @@ else
   grep -qv root <( groups "${oduser}" ) || { echo 'ROOT level privileges prohibited!'; exit 1; }
 fi
 
-chown "${oduser}:${odgroup}" /onedrive/ /onedrive/conf
-
 # Default parameters
 ARGS=(--monitor --confdir /onedrive/conf --syncdir /onedrive/data)
 echo "Base Args: ${ARGS}"
@@ -64,11 +62,32 @@ if [ "${ONEDRIVE_DOWNLOADONLY:=0}" == "1" ]; then
    ARGS=(--download-only ${ARGS[@]})
 fi
 
+# Tell client to sync in upload-only mode based on environment variable
+if [ "${ONEDRIVE_UPLOADONLY:=0}" == "1" ]; then
+   echo "# We are synchronizing in upload-only mode"
+   echo "# Adding --upload-only"
+   ARGS=(--upload-only ${ARGS[@]})
+fi
+
+# Tell client to sync in no-remote-delete mode based on environment variable
+if [ "${ONEDRIVE_NOREMOTEDELETE:=0}" == "1" ]; then
+   echo "# We are synchronizing in no-remote-delete mode"
+   echo "# Adding --no-remote-delete"
+   ARGS=(--no-remote-delete ${ARGS[@]})
+fi
+
 # Tell client to logout based on environment variable
 if [ "${ONEDRIVE_LOGOUT:=0}" == "1" ]; then
-   echo "# We are logging out to perform a reauthentication"
+   echo "# We are logging out"
    echo "# Adding --logout"
    ARGS=(--logout ${ARGS[@]})
+fi
+
+# Tell client to re-authenticate based on environment variable
+if [ "${ONEDRIVE_REAUTH:=0}" == "1" ]; then
+   echo "# We are logging out to perform a reauthentication"
+   echo "# Adding --reauth"
+   ARGS=(--reauth ${ARGS[@]})
 fi
 
 # Tell client to utilize auth files at the provided locations based on environment variable
@@ -78,11 +97,25 @@ if [ -n "${ONEDRIVE_AUTHFILES:=""}" ]; then
    ARGS=(--auth-files ${ONEDRIVE_AUTHFILES} ${ARGS[@]})
 fi
 
-# Tell client to utilize provided auth reponse based on environment variable
+# Tell client to utilize provided auth response based on environment variable
 if [ -n "${ONEDRIVE_AUTHRESPONSE:=""}" ]; then
    echo "# We are providing the auth response directly to perform authentication"
    echo "# Adding --auth-response ARG"
    ARGS=(--auth-response \"${ONEDRIVE_AUTHRESPONSE}\" ${ARGS[@]})
+fi
+
+# Tell client to print the running configuration at application startup
+if [ "${ONEDRIVE_DISPLAY_CONFIG:=0}" == "1" ]; then
+   echo "# We are printing the application running configuration at application startup"
+   echo "# Adding --display-running-config"
+   ARGS=(--display-running-config ${ARGS[@]})
+fi
+
+# Tell client to use sync single dir option
+if [ -n "${ONEDRIVE_SINGLE_DIRECTORY:=""}" ]; then
+   echo "# We are synchronizing in single-directory mode"
+   echo "# Adding --single-directory ARG"
+   ARGS=(--single-directory \"${ONEDRIVE_SINGLE_DIRECTORY}\" ${ARGS[@]})
 fi
 
 if [ ${#} -gt 0 ]; then
@@ -90,4 +123,10 @@ if [ ${#} -gt 0 ]; then
 fi
 
 echo "# Launching onedrive"
-exec gosu "${oduser}" /usr/local/bin/onedrive "${ARGS[@]}"
+# Only switch user if not running as target uid (ie. Docker)
+if [ "$ONEDRIVE_UID" = "$(id -u)" ]; then
+   /usr/local/bin/onedrive "${ARGS[@]}"
+else
+   chown "${oduser}:${odgroup}" /onedrive/data /onedrive/conf
+   exec gosu "${oduser}" /usr/local/bin/onedrive "${ARGS[@]}"
+fi

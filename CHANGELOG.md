@@ -2,6 +2,214 @@
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## 2.4.25 - 2023-06-21
+### Fixed
+*   Fixed that the application was reporting as v2.2.24 when in fact it was v2.4.24 (release tagging issue)
+*   Fixed that the running version obsolete flag (due to above issue) was causing a false flag as being obsolete
+*   Fixed that zero-byte files do not have a hash as reported by the OneDrive API thus should not generate an error message
+
+### Updated
+*   Update to Debian Docker file to resolve Docker image Operating System reported vulnerabilities
+*   Update to Alpine Docker file to resolve Docker image Operating System reported vulnerabilities
+*   Update to Fedora Docker file to resolve Docker image Operating System reported vulnerabilities
+*   Updated documentation (various)
+
+## 2.4.24 - 2023-06-20
+### Fixed
+*   Fix for extra encoded quotation marks surrounding Docker environment variables
+*   Fix webhook subscription creation for SharePoint Libraries
+*   Fix that a HTTP 504 - Gateway Timeout causes local files to be deleted when using --download-only & --cleanup-local-files mode
+*   Fix that folders are renamed despite using --dry-run
+*   Fix deprecation warnings with dmd 2.103.0
+*   Fix error that the application is unable to perform a database vacuum: out of memory when exiting
+
+### Removed
+*   Remove sha1 from being used by the client as this is being depreciated by Microsoft in July 2023
+*   Complete the removal of crc32 elements
+
+### Added
+*   Added ONEDRIVE_SINGLE_DIRECTORY configuration capability to Docker
+*   Added --get-file-link shell completion
+*   Added configuration to allow HTTP session timeout(s) tuning via config (taken from v2.5.x)
+
+### Updated
+*   Update to Debian Docker file to resolve Docker image Operating System reported vulnerabilities
+*   Update to Alpine Docker file to resolve Docker image Operating System reported vulnerabilities
+*   Update to Fedora Docker file to resolve Docker image Operating System reported vulnerabilities
+*   Updated cgi.d to commit 680003a - last upstream change before requiring `core.d` dependency requirement
+*   Updated documentation (various)
+
+## 2.4.23 - 2023-01-06
+### Fixed
+*   Fixed RHEL7, RHEL8 and RHEL9 Makefile and SPEC file compatibility
+
+### Removed
+*   Disable systemd 'PrivateUsers' due to issues with systemd running processes when option is enabled, causes local file deletes on RHEL based systems
+
+### Updated
+*   Update --get-O365-drive-id error handling to display a more a more appropriate error message if the API cannot be found
+*   Update the GitHub version check to utilise the date a release was done, to allow 1 month grace period before generating obsolete version message
+*   Update Alpine Dockerfile to use Alpine 3.17 and Golang 1.19
+*   Update handling of --source-directory and --destination-directory if one is empty or missing and if used with --synchronize or --monitor
+*   Updated documentation (various)
+
+## 2.4.22 - 2022-12-06
+### Fixed
+*   Fix application crash when local file is changed to a symbolic link with non-existent target
+*   Fix build error with dmd-2.101.0
+*   Fix build error with LDC 1.28.1 on Alpine
+*   Fix issue of silent exit when unable to delete local files when using --cleanup-local-files
+*   Fix application crash due to access permissions on configured path for sync_dir
+*   Fix potential application crash when exiting due to failure state and unable to cleanly shutdown the database
+*   Fix creation of parent empty directories when parent is excluded by sync_list
+
+### Added
+*   Added performance output details for key functions
+
+### Changed
+*   Switch Docker 'latest' to point at Debian builds rather than Fedora due to ongoing Fedora build failures
+*   Align application logging events to actual application defaults for --monitor operations
+*   Performance Improvement: Avoid duplicate costly path calculations and DB operations if not required
+*   Disable non-working remaining sandboxing options within systemd service files
+*   Performance Improvement: Only check 'sync_list' if this has been enabled and configured
+*   Display 'Sync with OneDrive is complete' when using --synchronize
+*   Change the order of processing between Microsoft OneDrive restrictions and limitations check and skip_file|skip_dir check
+
+### Removed
+*   Remove building Fedora ARMv7 builds due to ongoing build failures
+
+### Updated
+*   Update config change detection handling
+*   Updated documentation (various)
+
+## 2.4.21 - 2022-09-27
+### Fixed
+*   Fix that the download progress bar doesn't always reach 100% when rate_limit is set
+*   Fix --resync handling of database file removal
+*   Fix Makefile to be consistent with permissions that are being used
+*   Fix that logging output for skipped uploaded files is missing
+*   Fix to allow non-sync tasks while sync is running
+*   Fix where --resync is enforced for non-sync operations
+*   Fix to resolve segfault when running 'onedrive --display-sync-status' when run as 2nd process
+*   Fix DMD 2.100.2 depreciation warning
+
+### Added
+*   Add GitHub Action Test Build Workflow (replacing Travis CI)
+*   Add option --display-running-config to display the running configuration as used at application startup
+*   Add 'config' option to request readonly access in oauth authorization step
+*   Add option --cleanup-local-files to cleanup local files regardless of sync state when using --download-only
+*   Add option --with-editing-perms to create a read-write shareable link when used with --create-share-link <file>
+
+### Changed
+*   Change the exit code of the application to 126 when a --resync is required
+
+### Updated
+*   Updated --get-O365-drive-id implementation for data access
+*   Update what application options require an argument
+*   Update application logging output for error messages to remove certain \n prefix when logging to a file
+*   Update onedrive.spec.in to fix error building RPM
+*   Update GUI notification handling for specific skipped scenarios
+*   Updated documentation (various)
+
+## 2.4.20 - 2022-07-20
+### Fixed
+*   Fix 'foreign key constraint failed' when using OneDrive Business Shared Folders due to change to using /delta query
+*   Fix various little spelling fixes (check with lintian during Debian packaging)
+*   Fix handling of a custom configuration directory when using --confdir
+*   Fix to ensure that any active http instance is shutdown before any application exit
+*   Fix to enforce that --confdir must be a directory
+
+### Added
+*   Added 'force_http_11' configuration option to allow forcing HTTP/1.1 operations
+
+### Changed
+*   Increased thread sleep for better process I/O wait handling
+*   Removed 'force_http_2' configuration option
+
+### Updated
+*   Update OneDrive API response handling for National Cloud Deployments
+*   Updated to switch to using curl defaults for HTTP/2 operations
+*   Updated documentation (various)
+
+## 2.4.19 - 2022-06-15
+### Fixed
+*   Update Business Shared Folders to use a /delta query
+*   Update when DB is updated by OneDrive API data and update when file hash is required to be generated
+
+### Added
+*   Added ONEDRIVE_UPLOADONLY flag for Docker
+
+### Updated
+*   Updated GitHub workflows
+*   Updated documentation (various)
+
+## 2.4.18 - 2022-06-02
+### Fixed
+*   Fixed various database related access issues steming from running multiple instances of the application at the same time using the same configuration data
+*   Fixed --display-config being impacted by --resync flag
+*   Fixed installation permissions for onedrive man-pages file
+*   Fixed that in some situations that users try --upload-only and --download-only together which is not possible
+*   Fixed application crash if unable to read required hash files
+
+### Added
+*   Added Feature Request to add an override for skip_dir|skip_file through flag to force sync
+*   Added a check to validate local filesystem available space before attempting file download
+*   Added GitHub Actions to build Docker containers and push to DockerHub 
+
+### Updated
+*   Updated all Docker build files to current distributions, using updated distribution LDC version
+*   Updated logging output to logfiles when an actual sync process is occuring
+*   Updated output of --display-config to be more relevant
+*   Updated manpage to align with application configuration
+*   Updated documentation and Docker files based on minimum compiler versions to dmd-2.088.0 and ldc-1.18.0
+*   Updated documentation (various)
+
+## 2.4.17 - 2022-04-30
+### Fixed
+*   Fix docker build, by add missing git package for Fedora builds
+*   Fix application crash when attempting to sync a broken symbolic link
+*   Fix Internet connect disruption retry handling and logging output
+*   Fix local folder creation timestamp with timestamp from OneDrive
+*   Fix logging output when download failed
+
+### Added
+*   Add additional logging specifically for delete event to denote in log output the source of a deletion event when running in --monitor mode
+
+### Changed
+*   Improve when the local database integrity check is performed and on what frequency the database integrity check is performed
+
+### Updated
+*   Remove application output ambiguity on how to access 'help' for the client
+*   Update logging output when running in --monitor --verbose mode in regards to the inotify events
+*   Updated documentation (various)
+
+## 2.4.16 - 2022-03-10
+### Fixed
+*   Update application file logging error handling
+*   Explicitly set libcurl options
+*   Fix that when a sync_list exclusion is matched, the item needs to be excluded when using --resync
+*   Fix so that application can be compiled correctly on Android hosts
+*   Fix the handling of 429 and 5xx responses when they are generated by OneDrive in a self-referencing circular pattern
+*   Fix applying permissions to volume directories when running in rootless podman
+*   Fix unhandled errors from OneDrive when initialising subscriptions fail
+
+### Added
+*   Enable GitHub Sponsors
+*   Implement --resync-auth to enable CLI passing in of --rsync approval
+*   Add function to check client version vs latest GitHub release
+*   Add --reauth to allow easy re-authentication of the client
+*   Implement --modified-by to display who last modified a file and when the modification was done
+*   Implement feature request to mark partially-downloaded files as .partial during download
+*   Add documentation for Podman support
+
+### Changed
+*   Document risk regarding using --resync and force user acceptance of usage risk to proceed
+*   Use YAML for Bug Reports and Feature Requests
+*   Update Dockerfiles to use more modern base Linux distribution
+
+### Updated
+*   Updated documentation (various)
+
 ## 2.4.15 - 2021-12-31
 ### Fixed
 *   Fix unable to upload to OneDrive Business Shared Folders due to OneDrive API restricting quota information

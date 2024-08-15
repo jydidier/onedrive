@@ -13,20 +13,20 @@ sudo yum install -y libcurl-devel
 sudo yum install -y sqlite-devel
 sudo yum install -y libnotify-devel
 sudo yum install -y wget
-sudo yum install -y http://downloads.dlang.org/releases/2.x/2.087.0/dmd-2.087.0-0.fedora.x86_64.rpm
+sudo yum install -y http://downloads.dlang.org/releases/2.x/2.088.0/dmd-2.088.0-0.fedora.x86_64.rpm
 mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 ```
 
 ## Build RPM from spec file
 Build the RPM from the provided spec file:
 ```text
-wget https://github.com/abraunegg/onedrive/archive/refs/tags/v2.4.15.tar.gz -O ~/rpmbuild/SOURCES/v2.4.15.tar.gz
+wget https://github.com/abraunegg/onedrive/archive/refs/tags/v2.4.22.tar.gz -O ~/rpmbuild/SOURCES/v2.4.22.tar.gz
 wget https://raw.githubusercontent.com/abraunegg/onedrive/master/contrib/spec/onedrive.spec.in -O ~/rpmbuild/SPECS/onedrive.spec
 rpmbuild -ba ~/rpmbuild/SPECS/onedrive.spec
 ```
 
-## RPM Build Results
-Below are output results of building, installing and running the RPM package on the respective platforms:
+## RPM Build Example Results
+Below are example output results of building, installing and running the RPM package on the respective platforms:
 
 ### CentOS 7
 ```text

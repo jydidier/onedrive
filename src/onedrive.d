@@ -12,6 +12,7 @@ import progress;
 import config;
 import util;
 import arsd.cgi;
+import std.datetime;
 static import log;
 shared bool debugResponse = false;
 private bool dryRun = false;
@@ -212,10 +213,10 @@ final class OneDriveApi
 		this.cfg = cfg;
 		http = HTTP();
 		// Curl Timeout Handling
-		// DNS lookup timeout
-		http.dnsTimeout = (dur!"seconds"(5));
-		// Timeout for connecting
-		http.connectTimeout = (dur!"seconds"(10));
+		// libcurl dns_cache_timeout timeout
+		http.dnsTimeout = (dur!"seconds"(cfg.getValueLong("dns_timeout")));
+		// Timeout for HTTPS connections
+		http.connectTimeout = (dur!"seconds"(cfg.getValueLong("connect_timeout")));
 		// with the following settings we force
 		// - if there is no data flow for 10min, abort
 		// - if the download time for one item exceeds 1h, abort
@@ -226,17 +227,27 @@ final class OneDriveApi
 		//   It contains the time in number seconds that the
 		//   transfer speed should be below the CURLOPT_LOW_SPEED_LIMIT
 		//   for the library to consider it too slow and abort.
-		http.dataTimeout = (dur!"seconds"(600));
+		http.dataTimeout = (dur!"seconds"(cfg.getValueLong("data_timeout")));
 		// maximum time an operation is allowed to take
 		// This includes dns resolution, connecting, data transfer, etc.
 		http.operationTimeout = (dur!"seconds"(cfg.getValueLong("operation_timeout")));
+		// What IP protocol version should be used when using Curl - IPv4 & IPv6, IPv4 or IPv6
+		http.handle.set(CurlOption.ipresolve,cfg.getValueLong("ip_protocol_version")); // 0 = IPv4 + IPv6, 1 = IPv4 Only, 2 = IPv6 Only
 		// Specify how many redirects should be allowed
-		http.maxRedirects(5);
+		http.maxRedirects(cfg.defaultMaxRedirects);
 
 		// Do we enable curl debugging?
 		if (cfg.getValueBool("debug_https")) {
 			http.verbose = true;
 			.debugResponse = true;
+			
+			// Output what options we are using so that in the debug log this can be tracked
+			log.vdebug("http.dnsTimeout = ", cfg.getValueLong("dns_timeout"));
+			log.vdebug("http.connectTimeout = ", cfg.getValueLong("connect_timeout"));
+			log.vdebug("http.dataTimeout = ", cfg.getValueLong("data_timeout"));
+			log.vdebug("http.operationTimeout = ", cfg.getValueLong("operation_timeout"));
+			log.vdebug("http.CurlOption.ipresolve = ", cfg.getValueLong("ip_protocol_version"));
+			log.vdebug("http.maxRedirects = ", cfg.defaultMaxRedirects);
 		}
 
 		// Update clientId if application_id is set in config file
@@ -423,15 +434,14 @@ final class OneDriveApi
 
 		// What version of HTTP protocol do we use?
 		// Curl >= 7.62.0 defaults to http2 for a significant number of operations
-		if (cfg.getValueBool("force_http_2")) {
-			// Use curl defaults
-			log.vdebug("Upgrading all HTTP operations to HTTP/2 where applicable");
-		} else {
-			// Downgrade curl by default due to silent exist issues when using http/2
-			// See issue #501 for details and discussion
-			log.vdebug("Downgrading all HTTP operations to HTTP/1.1 by default");
+		if (cfg.getValueBool("force_http_11")) {
+			// Downgrade to curl to use HTTP 1.1 for all operations
+			log.vlog("Downgrading all HTTP operations to HTTP/1.1 due to user configuration");
 			// Downgrade to HTTP 1.1 - yes version = 2 is HTTP 1.1
 			http.handle.set(CurlOption.http_version,2);
+		} else {
+			// Use curl defaults
+			log.vlog("Using Curl defaults for all HTTP operations");
 		}
 
 		// Configure upload / download rate limits if configured
@@ -547,7 +557,7 @@ final class OneDriveApi
 				}
 				return true;
 			} else {
-				// --dry-run & --logout
+				// --dry-run & --reauth
 				return authorize();
 			}
 		}
@@ -557,7 +567,17 @@ final class OneDriveApi
 	{
 		import std.stdio, std.regex;
 		char[] response;
-		string url = authUrl ~ "?client_id=" ~ clientId ~ "&scope=Files.ReadWrite%20Files.ReadWrite.all%20Sites.Read.All%20Sites.ReadWrite.All%20offline_access&response_type=code&prompt=login&redirect_uri=" ~ redirectUrl;
+		string authScope;
+		// What authentication scope to use?
+		if (cfg.getValueBool("read_only_auth_scope")) {
+			// read-only authentication scopes has been requested
+			authScope = "&scope=Files.Read%20Files.Read.All%20Sites.Read.All%20offline_access&response_type=code&prompt=login&redirect_uri=";
+		} else {
+			// read-write authentication scopes will be used (default)
+			authScope = "&scope=Files.ReadWrite%20Files.ReadWrite.All%20Sites.ReadWrite.All%20offline_access&response_type=code&prompt=login&redirect_uri=";
+		}
+		
+		string url = authUrl ~ "?client_id=" ~ clientId ~ authScope ~ redirectUrl;
 		string authFilesString = cfg.getValueString("auth_files");
 		string authResponseString = cfg.getValueString("auth_response");
 		if (authResponseString != "") {
@@ -566,9 +586,19 @@ final class OneDriveApi
 			string[] authFiles = authFilesString.split(":");
 			string authUrl = authFiles[0];
 			string responseUrl = authFiles[1];
-			auto authUrlFile = File(authUrl, "w");
-			authUrlFile.write(url);
-			authUrlFile.close();
+			
+			try {
+				// Try and write out the auth URL to the nominated file
+				auto authUrlFile = File(authUrl, "w");
+				authUrlFile.write(url);
+				authUrlFile.close();
+			} catch (std.exception.ErrnoException e) {
+				// There was a file system error
+				// display the error message
+				displayFileSystemErrorMessage(e.msg, getFunctionName!({}));
+				return false;
+			}
+			
 			while (!exists(responseUrl)) {
 				Thread.sleep(dur!("msecs")(100));
 			}
@@ -599,12 +629,18 @@ final class OneDriveApi
 		// match the authorization code
 		auto c = matchFirst(response, r"(?:[\?&]code=)([\w\d-.]+)");
 		if (c.empty) {
-			log.log("Invalid uri");
+			log.log("Invalid response uri entered");
 			return false;
 		}
 		c.popFront(); // skip the whole match
 		redeemToken(c.front);
 		return true;
+	}
+	
+	string getSiteSearchUrl()
+	{
+		// Return the actual siteSearchUrl being used and/or requested when performing 'siteQuery = onedrive.o365SiteSearch(nextLink);' call
+		return .siteSearchUrl;
 	}
 
 	ulong getRetryAfterValue()
@@ -743,7 +779,7 @@ final class OneDriveApi
 		download(url, saveToPath, fileSize);
 		// Does path exist?
 		if (exists(saveToPath)) {
-			// File was downloaded sucessfully - configure the applicable permissions for the file
+			// File was downloaded successfully - configure the applicable permissions for the file
 			log.vdebug("Setting file permissions for: ", saveToPath);
 			saveToPath.setAttributes(cfg.returnRequiredFilePermisions());
 		}
@@ -853,7 +889,7 @@ final class OneDriveApi
 		checkAccessTokenExpired();
 		const(char)[] url;
 		url = driveByIdUrl ~ driveId ~ "/items/" ~ id;
-		url ~= "?select=size,malware,file,webUrl";
+		url ~= "?select=size,malware,file,webUrl,lastModifiedBy,lastModifiedDateTime";
 		return get(url);
 	}
 
@@ -996,15 +1032,35 @@ final class OneDriveApi
 		auto expirationDateTime = Clock.currTime(UTC()) + subscriptionExpirationInterval;
 		const(char)[] url;
 		url = subscriptionUrl;
+		// Create a resource item based on if we have a driveId
+		string resourceItem;
+		if (driveId.length) {
+				resourceItem = "/drives/" ~ driveId ~ "/root";
+		} else {
+				resourceItem = "/me/drive/root";
+		}
+		
+		// create JSON request to create webhook subscription
 		const JSONValue request = [
 			"changeType": "updated",
 			"notificationUrl": notificationUrl,
-			"resource": "/me/drive/root",
+			"resource": resourceItem,
 			"expirationDateTime": expirationDateTime.toISOExtString(),
  			"clientState": randomUUID().toString()
 		];
 		http.addRequestHeader("Content-Type", "application/json");
-		JSONValue response = post(url, request.toString());
+		JSONValue response;
+
+		try {
+			response = post(url, request.toString());
+		} catch (OneDriveException e) {
+			displayOneDriveErrorMessage(e.msg, getFunctionName!({}));
+			
+			// We need to exit here, user needs to fix issue
+			log.error("ERROR: Unable to initialize subscriptions for updates. Please fix this issue.");
+			shutdown();
+			exit(-1);
+		}
 
 		// Save important subscription metadata including id and expiration
 		subscriptionId = response["id"].str;
@@ -1070,6 +1126,29 @@ final class OneDriveApi
 		}
 
 		if (response.type() == JSONType.object) {
+			// Has the client been configured to use read_only_auth_scope
+			if (cfg.getValueBool("read_only_auth_scope")) {
+				// read_only_auth_scope has been configured
+				if ("scope" in response){
+					string effectiveScopes = response["scope"].str();
+					// Display the effective authentication scopes
+					writeln();
+					writeln("Effective API Authentication Scopes: ", effectiveScopes);
+					// if we have any write scopes, we need to tell the user to update an remove online prior authentication and exit application
+					if (canFind(effectiveScopes, "Write")) {
+						// effective scopes contain write scopes .. so not a read-only configuration
+						writeln();
+						writeln("ERROR: You have authentication scopes that allow write operations. You need to remove your existing application access consent");
+						writeln();
+						writeln("Please login to https://account.live.com/consent/Manage and remove your existing application access consent");
+						writeln();
+						// force exit
+						shutdown();
+						exit(-1);
+					}
+				}
+			}
+		
 			if ("access_token" in response){
 				accessToken = "bearer " ~ response["access_token"].str();
 				refreshToken = response["refresh_token"].str();
@@ -1105,9 +1184,11 @@ final class OneDriveApi
 		} catch (OneDriveException e) {
 			if (e.httpStatusCode == 400 || e.httpStatusCode == 401) {
 				// flag error and notify
-				log.errorAndNotify("\nERROR: Refresh token invalid, use --logout to authorize the client again.\n");
+				writeln();
+				log.errorAndNotify("ERROR: Refresh token invalid, use --reauth to authorize the client again.");
+				writeln();
 				// set error message
-				e.msg ~= "\nRefresh token invalid, use --logout to authorize the client again";
+				e.msg ~= "\nRefresh token invalid, use --reauth to authorize the client again";
 			}
 		}
 	}
@@ -1148,8 +1229,13 @@ final class OneDriveApi
 	{
 		// Threshold for displaying download bar
 		long thresholdFileSize = 4 * 2^^20; // 4 MiB
-		// open file as write in binary mode
-		auto file = File(filename, "wb");
+		
+		// To support marking of partially-downloaded files, 
+		string originalFilename = filename;
+		string downloadFilename = filename ~ ".partial";
+		
+		// open downloadFilename as write in binary mode
+		auto file = File(downloadFilename, "wb");
 
 		// function scopes
 		scope(exit) {
@@ -1187,30 +1273,72 @@ final class OneDriveApi
 			p.title = "Downloading";
 			writeln();
 			bool barInit = false;
-			real previousDLPercent = -1.0;
+			real previousProgressPercent = -1.0;
 			real percentCheck = 5.0;
+			long segmentCount = 1;
 			// Setup progress bar to display
 			http.onProgress = delegate int(size_t dltotal, size_t dlnow, size_t ultotal, size_t ulnow)
 			{
 				// For each onProgress, what is the % of dlnow to dltotal
 				// floor - rounds down to nearest whole number
 				real currentDLPercent = floor(double(dlnow)/dltotal*100);
+				// Have we started downloading?
 				if (currentDLPercent > 0){
 					// We have started downloading
-					// If matching 5% of download, increment progress bar
-					if ((isIdentical(fmod(currentDLPercent, percentCheck), 0.0)) && (previousDLPercent != currentDLPercent)) {
-						// What have we downloaded thus far
-						log.vdebugNewLine("Data Received  = ", dlnow);
-						log.vdebug("Expected Total = ", dltotal);
-						log.vdebug("Percent Complete = ", currentDLPercent);
-						// Increment counter & show bar update
-						p.next();
-						previousDLPercent = currentDLPercent;
+					log.vdebugNewLine("Data Received    = ", dlnow);
+					log.vdebug("Expected Total   = ", dltotal);
+					log.vdebug("Percent Complete = ", currentDLPercent);
+					// Every 5% download we need to increment the download bar
+
+					// Has the user set a data rate limit?
+					// when using rate_limit, we will get odd download rates, for example:
+					// Percent Complete = 24
+					// Data Received    = 13080163
+					// Expected Total   = 52428800
+					// Percent Complete = 24
+					// Data Received    = 13685777
+					// Expected Total   = 52428800
+					// Percent Complete = 26   <---- jumps to 26% missing 25%, thus fmod misses incrementing progress bar
+					// Data Received    = 13685777
+					// Expected Total   = 52428800
+					// Percent Complete = 26
+										
+					if (cfg.getValueLong("rate_limit") > 0) {
+						// User configured rate limit
+						// How much data should be in each segment to qualify for 5%
+						long dataPerSegment = to!long(floor(double(dltotal)/iteration));
+						// How much data received do we need to validate against
+						long thisSegmentData = dataPerSegment * segmentCount;
+						long nextSegmentData = dataPerSegment * (segmentCount + 1);
+						// Has the data that has been received in a 5% window that we need to increment the progress bar at
+						if ((dlnow > thisSegmentData) && (dlnow < nextSegmentData) && (previousProgressPercent != currentDLPercent) || (dlnow == dltotal)) {
+							// Downloaded data equals approx 5%
+							log.vdebug("Incrementing Progress Bar using calculated 5% of data received");
+							// Downloading  50% |oooooooooooooooooooo                    |   ETA   00:01:40  
+							// increment progress bar
+							p.next();
+							// update values
+							log.vdebug("Setting previousProgressPercent to ", currentDLPercent);
+							previousProgressPercent = currentDLPercent;
+							log.vdebug("Incrementing segmentCount");
+							segmentCount++;
+						}
+					} else {
+						// Is currentDLPercent divisible by 5 leaving remainder 0 and does previousProgressPercent not equal currentDLPercent
+						if ((isIdentical(fmod(currentDLPercent, percentCheck), 0.0)) && (previousProgressPercent != currentDLPercent)) {
+							// currentDLPercent matches a new increment
+							log.vdebug("Incrementing Progress Bar using fmod match");
+							// Downloading  50% |oooooooooooooooooooo                    |   ETA   00:01:40  
+							// increment progress bar
+							p.next();
+							// update values
+							previousProgressPercent = currentDLPercent;
+						}
 					}
 				} else {
 					if ((currentDLPercent == 0) && (!barInit)) {
 						// Initialise the download bar at 0%
-						// Downloading   0% |                                        |   ETA   --:--:--:^C
+						// Downloading   0% |                                        |   ETA   --:--:--:
 						p.next();
 						barInit = true;
 					}
@@ -1242,6 +1370,9 @@ final class OneDriveApi
 				displayOneDriveErrorMessage(e.msg, getFunctionName!({}));
 			}
 		}
+
+		// Rename downloaded file
+		rename(downloadFilename, originalFilename);
 
 		// Check the HTTP response code, which, if a 429, will also check response headers
 		checkHttpCode();
@@ -1358,45 +1489,84 @@ final class OneDriveApi
 		} catch (CurlException e) {
 			// Parse and display error message received from OneDrive
 			log.vdebug("onedrive.perform() Generated a OneDrive CurlException");
-			log.error("ERROR: OneDrive returned an error with the following message:");
 			auto errorArray = splitLines(e.msg);
 			string errorMessage = errorArray[0];
-			string defaultTimeoutErrorMessage = "  Error Message: There was a timeout in accessing the Microsoft OneDrive service - Internet connectivity issue?";
-
+			
+			// what is contained in the curl error message?
 			if (canFind(errorMessage, "Couldn't connect to server on handle") || canFind(errorMessage, "Couldn't resolve host name on handle") || canFind(errorMessage, "Timeout was reached on handle")) {
 				// This is a curl timeout
-				log.error(defaultTimeoutErrorMessage);
-				// or 408 request timeout
+				// or is this a 408 request timeout
 				// https://github.com/abraunegg/onedrive/issues/694
 				// Back off & retry with incremental delay
 				int retryCount = 10000;
-				int retryAttempts = 1;
-				int backoffInterval = 1;
+				int retryAttempts = 0;
+				int backoffInterval = 0;
 				int maxBackoffInterval = 3600;
+				int timestampAlign = 0;
 				bool retrySuccess = false;
+				SysTime currentTime;
+				
+				// what caused the initial curl exception?
+				if (canFind(errorMessage, "Couldn't connect to server on handle")) log.vdebug("Unable to connect to server - HTTPS access blocked?");
+				if (canFind(errorMessage, "Couldn't resolve host name on handle")) log.vdebug("Unable to resolve server - DNS access blocked?");
+				if (canFind(errorMessage, "Timeout was reached on handle")) log.vdebug("A timeout was triggered - data too slow, no response ... use --debug-https to diagnose further");
+				
 				while (!retrySuccess){
-					backoffInterval++;
-					int thisBackOffInterval = retryAttempts*backoffInterval;
-					log.vdebug("  Retry Attempt:      ", retryAttempts);
-					if (thisBackOffInterval <= maxBackoffInterval) {
-						log.vdebug("  Retry In (seconds): ", thisBackOffInterval);
-						Thread.sleep(dur!"seconds"(thisBackOffInterval));
-					} else {
-						log.vdebug("  Retry In (seconds): ", maxBackoffInterval);
-						Thread.sleep(dur!"seconds"(maxBackoffInterval));
-					}
 					try {
+						// configure libcurl to perform a fresh connection
+						log.vdebug("Configuring libcurl to use a fresh connection for re-try");
+						http.handle.set(CurlOption.fresh_connect,1);
+						// try the access
 						http.perform();
 						// Check the HTTP Response headers - needed for correct 429 handling
 						checkHTTPResponseHeaders();
 						// no error from http.perform() on re-try
 						log.log("Internet connectivity to Microsoft OneDrive service has been restored");
+						// unset the fresh connect option as this then creates performance issues if left enabled
+						log.vdebug("Unsetting libcurl to use a fresh connection as this causes a performance impact if left enabled");
+						http.handle.set(CurlOption.fresh_connect,0);
+						// connectivity restored
 						retrySuccess = true;
 					} catch (CurlException e) {
+						// when was the exception generated
+						currentTime = Clock.currTime();
+						// Increment retry attempts
+						retryAttempts++;
 						if (canFind(e.msg, "Couldn't connect to server on handle") || canFind(e.msg, "Couldn't resolve host name on handle") || canFind(errorMessage, "Timeout was reached on handle")) {
-							log.error(defaultTimeoutErrorMessage);
-							// Increment & loop around
-							retryAttempts++;
+							// no access to Internet
+							writeln();
+							log.error("ERROR: There was a timeout in accessing the Microsoft OneDrive service - Internet connectivity issue?");
+							// what is the error reason to assis the user as what to check
+							if (canFind(e.msg, "Couldn't connect to server on handle")) {
+								log.log("  - Check HTTPS access or Firewall Rules");
+								timestampAlign = 9;
+							}	
+							if (canFind(e.msg, "Couldn't resolve host name on handle")) {
+								log.log("  - Check DNS resolution or Firewall Rules");
+								timestampAlign = 0;
+							}
+							
+							// increment backoff interval
+							backoffInterval++;
+							int thisBackOffInterval = retryAttempts*backoffInterval;
+							
+							// display retry information
+							currentTime.fracSecs = Duration.zero;
+							auto timeString = currentTime.toString();
+							log.vlog("  Retry attempt:          ", retryAttempts);
+							log.vlog("  This attempt timestamp: ", timeString);
+							if (thisBackOffInterval > maxBackoffInterval) {
+								thisBackOffInterval = maxBackoffInterval;
+							}
+							
+							// detail when the next attempt will be tried
+							// factor in the delay for curl to generate the exception - otherwise the next timestamp appears to be 'out' even though technically correct
+							auto nextRetry = currentTime + dur!"seconds"(thisBackOffInterval) + dur!"seconds"(timestampAlign);
+							log.vlog("  Next retry in approx:   ", (thisBackOffInterval + timestampAlign), " seconds");
+							log.vlog("  Next retry approx:      ", nextRetry);
+							
+							// thread sleep
+							Thread.sleep(dur!"seconds"(thisBackOffInterval));
 						}
 						if (retryAttempts == retryCount) {
 							// we have attempted to re-connect X number of times
@@ -1406,13 +1576,26 @@ final class OneDriveApi
 					}
 				}
 				if (retryAttempts >= retryCount) {
-					log.error("  Error Message: Was unable to reconnect to the Microsoft OneDrive service after 10000 attempts lasting over 1.2 years!");
+					log.error("  ERROR: Unable to reconnect to the Microsoft OneDrive service after ", retryCount, " attempts lasting over 1.2 years!");
 					throw new OneDriveException(408, "Request Timeout - HTTP 408 or Internet down?");
 				}
 			} else {
+				// Log that an error was returned
+				log.error("ERROR: OneDrive returned an error with the following message:");
 				// Some other error was returned
 				log.error("  Error Message: ", errorMessage);
 				log.error("  Calling Function: ", getFunctionName!({}));
+				
+				// Was this a curl initialization error?
+				if (canFind(errorMessage, "Failed initialization on handle")) {
+					// initialization error ... prevent a run-away process if we have zero disk space
+					ulong localActualFreeSpace = to!ulong(getAvailableDiskSpace("."));
+					if (localActualFreeSpace == 0) {
+						// force exit
+						shutdown();
+						exit(-1);
+					}
+				}
 			}
 			// return an empty JSON for handling
 			return json;
@@ -1632,7 +1815,7 @@ final class OneDriveApi
 			case 403:
 				// OneDrive responded that the user is forbidden
 				log.vlog("OneDrive returned a 'HTTP 403 - Forbidden' - gracefully handling error");
-				// Throw this as a specific exception so this is caught when performing sync.o365SiteSearch
+				// Throw this as a specific exception so this is caught when performing 'siteQuery = onedrive.o365SiteSearch(nextLink);' call
 				throw new OneDriveException(http.statusLine.code, http.statusLine.reason, response);
 
 			//	412 - Precondition Failed

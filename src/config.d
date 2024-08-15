@@ -43,6 +43,35 @@ final class Config
 	// Default file permission mode
 	public long defaultFilePermissionMode = 600;
 	public int configuredFilePermissionMode;
+	
+	// Bring in v2.5.0 config items
+	
+	// HTTP Struct items, used for configuring HTTP()
+	// Curl Timeout Handling
+	// libcurl dns_cache_timeout timeout
+	immutable int defaultDnsTimeout = 60;
+	// Connect timeout for HTTP|HTTPS connections
+	immutable int defaultConnectTimeout = 10;
+	// With the following settings we force
+	// - if there is no data flow for 10min, abort
+	// - if the download time for one item exceeds 1h, abort
+	//
+	// Timeout for activity on connection
+	//  this translates into Curl's CURLOPT_LOW_SPEED_TIME
+	//  which says:
+	//   It contains the time in number seconds that the
+	//   transfer speed should be below the CURLOPT_LOW_SPEED_LIMIT
+	//   for the library to consider it too slow and abort.
+	immutable int defaultDataTimeout = 600;
+	// Maximum time any operation is allowed to take
+	// This includes dns resolution, connecting, data transfer, etc.
+	immutable int defaultOperationTimeout = 3600;
+	// Specify how many redirects should be allowed
+	immutable int defaultMaxRedirects = 5;
+	// Specify what IP protocol version should be used when communicating with OneDrive
+	immutable int defaultIpProtocol = 0; // 0 = IPv4 + IPv6, 1 = IPv4 Only, 2 = IPv6 Only
+	
+	
 
 	this(string confdirOption)
 	{
@@ -62,7 +91,7 @@ final class Config
 		boolValues["disable_download_validation"] = false;
 		boolValues["disable_upload_validation"] = false;
 		boolValues["enable_logging"] = false;
-		boolValues["force_http_2"] = false;
+		boolValues["force_http_11"] = false;
 		boolValues["local_first"] = false;
 		boolValues["no_remote_delete"] = false;
 		boolValues["skip_symlinks"] = false;
@@ -75,10 +104,11 @@ final class Config
 		longValues["monitor_interval"] = 300;
 		longValues["skip_size"] = 0;
 		longValues["min_notify_changes"] = 5;
-		longValues["monitor_log_frequency"] = 5;
-		// Number of n sync runs before performing a full local scan of sync_dir
-		// By default 10 which means every ~7.5 minutes a full disk scan of sync_dir will occur
-		longValues["monitor_fullscan_frequency"] = 10;
+		longValues["monitor_log_frequency"] = 6;
+		// Number of N sync runs before performing a full local scan of sync_dir
+		// By default 12 which means every ~60 minutes a full disk scan of sync_dir will occur 
+		// 'monitor_interval' * 'monitor_fullscan_frequency' = 3600 = 1 hour
+		longValues["monitor_fullscan_frequency"] = 12;
 		// Number of children in a path that is locally removed which will be classified as a 'big data delete'
 		longValues["classify_as_big_delete"] = 1000;
 		// Delete source after successful transfer
@@ -121,10 +151,8 @@ final class Config
 		longValues["sync_file_permissions"] = defaultFilePermissionMode;
 		// Configure download / upload rate limits
 		longValues["rate_limit"] = 0;
-		// maximum time an operation is allowed to take
-		// This includes dns resolution, connecting, data transfer, etc.
-		longValues["operation_timeout"] = 3600;		
-
+		// To ensure we do not fill up the load disk, how much disk space should be reserved by default
+		longValues["space_reservation"] = 50 * 2^^20; // 50 MB as Bytes
 		// Webhook options
 		boolValues["webhook_enabled"] = false;
 		stringValues["webhook_public_url"] = "";
@@ -132,6 +160,12 @@ final class Config
 		longValues["webhook_listening_port"] = 8888;
 		longValues["webhook_expiration_interval"] = 3600 * 24;
 		longValues["webhook_renewal_interval"] = 3600 * 12;
+		// Log to application output running configuration values
+		boolValues["display_running_config"] = false;
+		// Configure read-only authentication scope
+		boolValues["read_only_auth_scope"] = false;
+		// Flag to cleanup local files when using --download-only
+		boolValues["cleanup_local_files"] = false;
 
 		// DEVELOPER OPTIONS
 		// display_memory = true | false
@@ -145,7 +179,29 @@ final class Config
 		// display_sync_options = true | false
 		// - It may be desirable to see what options are being passed in to performSync() without enabling the full verbose debug logging
 		boolValues["display_sync_options"] = false;
-
+		// force_children_scan = true | false
+		// - Force client to use /children rather than /delta to query changes on OneDrive
+		// - This option flags nationalCloudDeployment as true, forcing the client to act like it is using a National Cloud Deployment
+		boolValues["force_children_scan"] = false;
+		// display_processing_time = true | false
+		// - Enabling this option will add function processing times to the console output
+		// - This then enables tracking of where the application is spending most amount of time when processing data when users have questions re performance
+		boolValues["display_processing_time"] = false;
+		
+		// HTTPS & CURL Operation Settings
+		// - Maximum time an operation is allowed to take
+		//   This includes dns resolution, connecting, data transfer, etc.
+		longValues["operation_timeout"] = defaultOperationTimeout;
+		// libcurl dns_cache_timeout timeout
+		longValues["dns_timeout"] = defaultDnsTimeout;
+		// Timeout for HTTPS connections
+		longValues["connect_timeout"] = defaultConnectTimeout;
+		// Timeout for activity on a HTTPS connection
+		longValues["data_timeout"] = defaultDataTimeout;
+		// What IP protocol version should be used when communicating with OneDrive
+		longValues["ip_protocol_version"] = defaultIpProtocol; // 0 = IPv4 + IPv6, 1 = IPv4 Only, 2 = IPv6 Only
+				
+		// EXPAND USERS HOME DIRECTORY
 		// Determine the users home directory.
 		// Need to avoid using ~ here as expandTilde() below does not interpret correctly when running under init.d or systemd scripts
 		// Check for HOME environment variable
@@ -175,6 +231,8 @@ final class Config
 		string systemConfigDirBase;
 		if (confdirOption != "") {
 			// A CLI 'confdir' was passed in
+			// Clean up any stray " .. these should not be there ...
+			confdirOption = strip(confdirOption,"\"");
 			log.vdebug("configDirName: CLI override to set configDirName to: ", confdirOption);
 			if (canFind(confdirOption,"~")) {
 				// A ~ was found
@@ -212,6 +270,20 @@ final class Config
 			mkdirRecurse(configDirName);
 			// Configure the applicable permissions for the folder
 			configDirName.setAttributes(returnRequiredDirectoryPermisions());
+		} else {
+			// The config path exists
+			// The path that exists must be a directory, not a file
+			if (!isDir(configDirName)) {
+				if (!confdirOption.empty) {
+					// the configuration path was passed in by the user .. user error
+					writeln("ERROR: --confdir entered value is an existing file instead of an existing directory");
+				} else {
+					// other error
+					writeln("ERROR: ~/.config/onedrive is a file rather than a directory");
+				}
+				// Must exit
+				exit(EXIT_FAILURE);	
+			}
 		}
 
 		// configDirName has a trailing /
@@ -286,6 +358,7 @@ final class Config
 		stringValues["create_share_link"] = "";
 		stringValues["destination_directory"] = "";
 		stringValues["get_file_link"]     = "";
+		stringValues["modified_by"]       = "";
 		stringValues["get_o365_drive_id"] = "";
 		stringValues["remove_directory"]  = "";
 		stringValues["single_directory"]  = "";
@@ -296,10 +369,13 @@ final class Config
 		boolValues["display_sync_status"] = false;
 		boolValues["print_token"]         = false;
 		boolValues["logout"]              = false;
+		boolValues["reauth"]              = false;
 		boolValues["monitor"]             = false;
 		boolValues["synchronize"]         = false;
 		boolValues["force"]               = false;
 		boolValues["list_business_shared_folders"] = false;
+		boolValues["force_sync"]          = false;
+		boolValues["with_editing_perms"]  = false;
 
 		// Application Startup option validation
 		try {
@@ -316,7 +392,7 @@ final class Config
 					"Perform authentication not via interactive dialog but via files read/writes to these files.",
 					&stringValues["auth_files"],
 				"auth-response",
-					"Perform authentication not via interactive dialog but via providing the reponse url directly.",
+					"Perform authentication not via interactive dialog but via providing the response url directly.",
 					&stringValues["auth_response"],
 				"check-for-nomount",
 					"Check for the presence of .nosync in the syncdir root. If found, do not perform sync.",
@@ -327,6 +403,9 @@ final class Config
 				"classify-as-big-delete",
 					"Number of children in a path that is locally removed which will be classified as a 'big data delete'",
 					&longValues["classify_as_big_delete"],
+				"cleanup-local-files",
+					"Cleanup additional local files when using --download-only. This will remove local data.",
+					&boolValues["cleanup_local_files"],	
 				"create-directory",
 					"Create a directory on OneDrive - no sync will be performed.",
 					&stringValues["create_directory"],
@@ -351,6 +430,9 @@ final class Config
 				"display-config",
 					"Display what options the client will use as currently configured - no sync will be performed.",
 					&boolValues["display_config"],
+				"display-running-config",
+					"Display what options the client has been configured to use on application startup.",
+					&boolValues["display_running_config"],
 				"display-sync-status",
 					"Display the sync status of the client - no sync will be performed.",
 					&boolValues["display_sync_status"],
@@ -363,12 +445,15 @@ final class Config
 				"enable-logging",
 					"Enable client activity to a separate log file",
 					&boolValues["enable_logging"],
-				"force-http-2",
-					"Force the use of HTTP/2 for all operations where applicable",
-					&boolValues["force_http_2"],
+				"force-http-11",
+					"Force the use of HTTP 1.1 for all operations",
+					&boolValues["force_http_11"],
 				"force",
 					"Force the deletion of data when a 'big delete' is detected",
 					&boolValues["force"],
+				"force-sync",
+					"Force a synchronization of a specific folder, only when using --synchronize --single-directory and ignore all non-default skip_dir and skip_file rules",
+					&boolValues["force_sync"],
 				"get-file-link",
 					"Display the file link of a synced file",
 					&stringValues["get_file_link"],
@@ -387,6 +472,9 @@ final class Config
 				"min-notify-changes",
 					"Minimum number of pending incoming changes necessary to trigger a desktop notification",
 					&longValues["min_notify_changes"],
+				"modified-by",
+					"Display the last modified by details of a given path",
+					&stringValues["modified_by"],
 				"monitor|m",
 					"Keep monitoring for local and remote changes",
 					&boolValues["monitor"],
@@ -402,12 +490,12 @@ final class Config
 				"no-remote-delete",
 					"Do not delete local file 'deletes' from OneDrive when using --upload-only",
 					&boolValues["no_remote_delete"],
-				"operation-timeout",
-					"Maximum amount of time (in seconds) an operation is allowed to take",
-					&longValues["operation_timeout"],
 				"print-token",
 					"Print the access token, useful for debugging",
 					&boolValues["print_token"],
+				"reauth",
+					"Reauthenticate the client with OneDrive",
+					&boolValues["reauth"],
 				"resync",
 					"Forget the last saved state, perform a full sync",
 					&boolValues["resync"],
@@ -444,6 +532,9 @@ final class Config
 				"source-directory",
 					"Source directory to rename or move on OneDrive - no sync will be performed.",
 					&stringValues["source_directory"],
+				"space-reservation",
+					"The amount of disk space to reserve (in MB) to avoid 100% disk space utilisation",
+					&longValues["space_reservation"],
 				"syncdir",
 					"Specify the local directory used for synchronization to OneDrive",
 					&stringValues["sync_dir"],
@@ -473,7 +564,10 @@ final class Config
 					&boolValues["list_business_shared_folders"],
 				"sync-shared-folders",
 					"Sync OneDrive Business Shared Folders",
-					&boolValues["sync_business_shared_folders"]
+					&boolValues["sync_business_shared_folders"],
+				"with-editing-perms",
+					"Create a read-write shareable link for an existing file on OneDrive when used with --create-share-link <file>",
+					&boolValues["with_editing_perms"]
 			);
 			if (opt.helpWanted) {
 				outputLongHelp(opt.options);
@@ -540,9 +634,19 @@ final class Config
 	private bool load(string filename)
 	{
 		// configure function variables
+		try {
+			readText(filename);
+		} catch (std.file.FileException e) {
+			// Unable to access required file
+			log.error("ERROR: Unable to access ", e.msg);
+			// Use exit scopes to shutdown API
+			return false;
+		}
+		
+		// We were able to readText the config file - so, we should be able to open and read it
 		auto file = File(filename, "r");
 		string lineBuffer;
-
+		
 		// configure scopes
 		// - failure
 		scope(failure) {
@@ -551,7 +655,6 @@ final class Config
 				// close open file
 				file.close();
 			}
-			return false;
 		}
 		// - exit
 		scope(exit) {
@@ -608,7 +711,13 @@ final class Config
 								setValueString("skip_dir", configFileSkipDir);
 							}
 						}
-
+						// --single-directory Strip quotation marks from path 
+						// This is an issue when using ONEDRIVE_SINGLE_DIRECTORY with Docker
+						if (key == "single_directory") {
+							// Strip quotation marks from provided path
+							string configSingleDirectory = strip(to!string(c.front.dup), "\"");
+							setValueString("single_directory", configSingleDirectory);
+						}
 						// Azure AD Configuration
 						if (key == "azure_ad_endpoint") {
 							string azureConfigValue = c.front.dup;
@@ -638,6 +747,16 @@ final class Config
 						if (ppp) {
 							c.popFront();
 							setValueLong(key, to!long(c.front.dup));
+							// if key is space_reservation we have to calculate MB -> bytes
+							if (key == "space_reservation") {
+								// temp value
+								ulong tempValue = to!long(c.front.dup);
+								// a value of 0 needs to be made at least 1MB .. 
+								if (tempValue == 0) {
+									tempValue = 1;
+								}
+								setValueLong("space_reservation", to!long(tempValue * 2^^20));
+							}
 						} else {
 							log.log("Unknown key in config file: ", key);
 							return false;
@@ -704,11 +823,27 @@ final class Config
 		}
 		return configuredFilePermissionMode;
 	}
+	
+	void resetSkipToDefaults() {
+		// reset skip_file and skip_dir to application defaults
+		// skip_file
+		log.vdebug("original skip_file: ", getValueString("skip_file"));
+		log.vdebug("resetting skip_file");
+		setValueString("skip_file", defaultSkipFile);
+		log.vdebug("reset skip_file: ", getValueString("skip_file"));
+		// skip_dir
+		log.vdebug("original skip_dir: ", getValueString("skip_dir"));
+		log.vdebug("resetting skip_dir");
+		setValueString("skip_dir", defaultSkipDir);
+		log.vdebug("reset skip_dir: ", getValueString("skip_dir"));
+	}
 }
 
 void outputLongHelp(Option[] opt)
 {
 	auto argsNeedingOptions = [
+		"--auth-files",
+		"--auth-response",
 		"--confdir",
 		"--create-directory",
 		"--create-share-link",
@@ -717,13 +852,18 @@ void outputLongHelp(Option[] opt)
 		"--get-O365-drive-id",
 		"--log-dir",
 		"--min-notify-changes",
+		"--modified-by",
 		"--monitor-interval",
 		"--monitor-log-frequency",
 		"--monitor-fullscan-frequency",
+		"--operation-timeout",
 		"--remove-directory",
 		"--single-directory",
+		"--skip-dir",
 		"--skip-file",
+		"--skip-size",
 		"--source-directory",
+		"--space-reservation",
 		"--syncdir",
 		"--user-agent" ];
 	writeln(`OneDrive - a client for OneDrive Cloud Services

@@ -14,7 +14,10 @@ import std.uri;
 import std.json;
 import std.traits;
 import qxor;
-static import log;
+import core.stdc.stdlib;
+
+import log;
+import config;
 
 shared string deviceName;
 
@@ -47,28 +50,6 @@ void safeRemove(const(char)[] path)
 	if (exists(path)) remove(path);
 }
 
-// returns the crc32 hex string of a file
-string computeCrc32(string path)
-{
-	CRC32 crc;
-	auto file = File(path, "rb");
-	foreach (ubyte[] data; chunks(file, 4096)) {
-		crc.put(data);
-	}
-	return crc.finish().toHexString().dup;
-}
-
-// returns the sha1 hash hex string of a file
-string computeSha1Hash(string path)
-{
-	SHA1 sha;
-	auto file = File(path, "rb");
-	foreach (ubyte[] data; chunks(file, 4096)) {
-		sha.put(data);
-	}
-	return sha.finish().toHexString().dup;
-}
-
 // returns the quickXorHash base64 string of a file
 string computeQuickXorHash(string path)
 {
@@ -78,6 +59,16 @@ string computeQuickXorHash(string path)
 		qxor.put(data);
 	}
 	return Base64.encode(qxor.finish());
+}
+
+// returns the SHA256 hex string of a file
+string computeSHA256Hash(string path) {
+	SHA256 sha256;
+    auto file = File(path, "rb");
+    foreach (ubyte[] data; chunks(file, 4096)) {
+        sha256.put(data);
+    }
+    return sha256.finish().toHexString().dup;
 }
 
 // converts wildcards (*, ?) to regex
@@ -125,22 +116,30 @@ Regex!char wild2regex(const(char)[] pattern)
 }
 
 // returns true if the network connection is available
-bool testNetwork()
+bool testNetwork(Config cfg)
 {
 	// Use low level HTTP struct
 	auto http = HTTP();
 	http.url = "https://login.microsoftonline.com";
 	// DNS lookup timeout
-	http.dnsTimeout = (dur!"seconds"(5));
+	http.dnsTimeout = (dur!"seconds"(cfg.getValueLong("dns_timeout")));
 	// Timeout for connecting
-	http.connectTimeout = (dur!"seconds"(5));
+	http.connectTimeout = (dur!"seconds"(cfg.getValueLong("connect_timeout")));
+	// Data Timeout for HTTPS connections
+	http.dataTimeout = (dur!"seconds"(cfg.getValueLong("data_timeout")));
+	// maximum time any operation is allowed to take
+	// This includes dns resolution, connecting, data transfer, etc.
+	http.operationTimeout = (dur!"seconds"(cfg.getValueLong("operation_timeout")));	
+	// What IP protocol version should be used when using Curl - IPv4 & IPv6, IPv4 or IPv6
+	http.handle.set(CurlOption.ipresolve,cfg.getValueLong("ip_protocol_version")); // 0 = IPv4 + IPv6, 1 = IPv4 Only, 2 = IPv6 Only
+	
 	// HTTP connection test method
 	http.method = HTTP.Method.head;
 	// Attempt to contact the Microsoft Online Service
 	try {
 		log.vdebug("Attempting to contact online service");
 		http.perform();
-		log.vdebug("Shutting down HTTP engine as sucessfully reached OneDrive Online Service");
+		log.vdebug("Shutting down HTTP engine as successfully reached OneDrive Online Service");
 		http.shutdown();
 		return true;
 	} catch (SocketException e) {
@@ -268,7 +267,8 @@ bool containsASCIIHTMLCodes(string path)
 // Parse and display error message received from OneDrive
 void displayOneDriveErrorMessage(string message, string callingFunction)
 {
-	log.error("\nERROR: Microsoft OneDrive API returned an error with the following message:");
+	writeln();
+	log.error("ERROR: Microsoft OneDrive API returned an error with the following message:");
 	auto errorArray = splitLines(message);
 	log.error("  Error Message:    ", errorArray[0]);
 	// Extract 'message' as the reason
@@ -332,23 +332,228 @@ void displayOneDriveErrorMessage(string message, string callingFunction)
 	}
 	
 	// Where in the code was this error generated
-	log.error("  Calling Function: ", callingFunction);
+	log.vlog("  Calling Function: ", callingFunction);
 }
 
 // Parse and display error message received from the local file system
 void displayFileSystemErrorMessage(string message, string callingFunction) 
 {
-	log.error("\nERROR: The local file system returned an error with the following message:");
+	writeln();
+	log.error("ERROR: The local file system returned an error with the following message:");
 	auto errorArray = splitLines(message);
 	// What was the error message
 	log.error("  Error Message:    ", errorArray[0]);
 	// Where in the code was this error generated
-	log.error("  Calling Function: ", callingFunction);
+	log.vlog("  Calling Function: ", callingFunction);
+	// If we are out of disk space (despite download reservations) we need to exit the application
+	ulong localActualFreeSpace = to!ulong(getAvailableDiskSpace("."));
+	if (localActualFreeSpace == 0) {
+		// force exit
+		exit(-1);
+	}
 }
 
 // Get the function name that is being called to assist with identifying where an error is being generated
 string getFunctionName(alias func)() {
     return __traits(identifier, __traits(parent, func)) ~ "()\n";
+}
+
+// Get the latest release version from GitHub
+JSONValue getLatestReleaseDetails() {
+	// Import curl just for this function
+	import std.net.curl;
+	char[] content;
+	JSONValue githubLatest;
+	JSONValue versionDetails;
+	string latestTag;
+	string publishedDate;
+	
+	try {
+		content = get("https://api.github.com/repos/abraunegg/onedrive/releases/latest");
+	} catch (CurlException e) {
+		// curl generated an error - meaning we could not query GitHub
+		log.vdebug("Unable to query GitHub for latest release");
+	}
+	
+	try {
+		githubLatest = content.parseJSON();
+	} catch (JSONException e) {
+		// unable to parse the content JSON, set to blank JSON
+		log.vdebug("Unable to parse GitHub JSON response");
+		githubLatest = parseJSON("{}");
+	}
+	
+	// githubLatest has to be a valid JSON object
+	if (githubLatest.type() == JSONType.object){
+		// use the returned tag_name
+		if ("tag_name" in githubLatest) {
+			// use the provided tag
+			// "tag_name": "vA.B.CC" and strip 'v'
+			latestTag = strip(githubLatest["tag_name"].str, "v");
+		} else {
+			// set to latestTag zeros
+			log.vdebug("'tag_name' unavailable in JSON response. Setting GitHub 'tag_name' release version to 0.0.0");
+			latestTag = "0.0.0";
+		}
+		// use the returned published_at date
+		if ("published_at" in githubLatest) {
+			// use the provided value
+			publishedDate = githubLatest["published_at"].str;
+		} else {
+			// set to v2.0.0 release date
+			log.vdebug("'published_at' unavailable in JSON response. Setting GitHub 'published_at' date to 2018-07-18T18:00:00Z");
+			publishedDate = "2018-07-18T18:00:00Z";
+		}
+	} else {
+		// JSONValue is not an object
+		log.vdebug("Invalid JSON Object. Setting GitHub 'tag_name' release version to 0.0.0");
+		latestTag = "0.0.0";
+		log.vdebug("Invalid JSON Object. Setting GitHub 'published_at' date to 2018-07-18T18:00:00Z");
+		publishedDate = "2018-07-18T18:00:00Z";	
+	}
+		
+	// return the latest github version and published date as our own JSON
+	versionDetails = [
+		"latestTag": JSONValue(latestTag),
+		"publishedDate": JSONValue(publishedDate)
+	];
+	
+	// return JSON
+	return versionDetails;
+}
+
+// Get the release details from the 'current' running version
+JSONValue getCurrentVersionDetails(string thisVersion) {
+	// Import curl just for this function
+	import std.net.curl;
+	char[] content;
+	JSONValue githubDetails;
+	JSONValue versionDetails;
+	string versionTag = "v" ~ thisVersion;
+	string publishedDate;
+	
+	try {
+		content = get("https://api.github.com/repos/abraunegg/onedrive/releases");
+	} catch (CurlException e) {
+		// curl generated an error - meaning we could not query GitHub
+		log.vdebug("Unable to query GitHub for release details");
+	}
+	
+	try {
+		githubDetails = content.parseJSON();
+	} catch (JSONException e) {
+		// unable to parse the content JSON, set to blank JSON
+		log.vdebug("Unable to parse GitHub JSON response");
+		githubDetails = parseJSON("{}");
+	}
+	
+	// githubDetails has to be a valid JSON array
+	if (githubDetails.type() == JSONType.array){
+		foreach (searchResult; githubDetails.array) {
+			// searchResult["tag_name"].str;
+			if (searchResult["tag_name"].str == versionTag) {
+				log.vdebug("MATCHED version");
+				log.vdebug("tag_name: ", searchResult["tag_name"].str);
+				log.vdebug("published_at: ", searchResult["published_at"].str);
+				publishedDate = searchResult["published_at"].str;
+			}
+		}
+		
+		if (publishedDate.empty) {
+			// empty .. no version match ?
+			// set to v2.0.0 release date
+			log.vdebug("'published_at' unavailable in JSON response. Setting GitHub 'published_at' date to 2018-07-18T18:00:00Z");
+			publishedDate = "2018-07-18T18:00:00Z";
+		}
+	} else {
+		// JSONValue is not an Array
+		log.vdebug("Invalid JSON Array. Setting GitHub 'published_at' date to 2018-07-18T18:00:00Z");
+		publishedDate = "2018-07-18T18:00:00Z";	
+	}
+		
+	// return the latest github version and published date as our own JSON
+	versionDetails = [
+		"versionTag": JSONValue(thisVersion),
+		"publishedDate": JSONValue(publishedDate)
+	];
+	
+	// return JSON
+	return versionDetails;
+}
+
+// Check the application version versus GitHub latestTag
+void checkApplicationVersion() {
+	// Get the latest details from GitHub
+	JSONValue latestVersionDetails = getLatestReleaseDetails();
+	string latestVersion = latestVersionDetails["latestTag"].str;
+	SysTime publishedDate = SysTime.fromISOExtString(latestVersionDetails["publishedDate"].str).toUTC();
+	SysTime releaseGracePeriod = publishedDate;
+	SysTime currentTime = Clock.currTime().toUTC();
+	
+	// drop fraction seconds
+	publishedDate.fracSecs = Duration.zero;
+	currentTime.fracSecs = Duration.zero;
+	releaseGracePeriod.fracSecs = Duration.zero;
+	// roll the grace period forward to allow distributions to catch up based on their release cycles
+	releaseGracePeriod = releaseGracePeriod.add!"months"(1);
+
+	// what is this clients version?
+	auto currentVersionArray = strip(strip(import("version"), "v")).split("-");
+	string applicationVersion = currentVersionArray[0];
+	
+	// debug output
+	log.vdebug("applicationVersion:       ", applicationVersion);
+	log.vdebug("latestVersion:            ", latestVersion);
+	log.vdebug("publishedDate:            ", publishedDate);
+	log.vdebug("currentTime:              ", currentTime);
+	log.vdebug("releaseGracePeriod:       ", releaseGracePeriod);
+	
+	// display details if not current
+	// is application version is older than available on GitHub
+	if (applicationVersion != latestVersion) {
+		// application version is different
+		bool displayObsolete = false;
+		
+		// what warning do we present?
+		if (applicationVersion < latestVersion) {
+			// go get this running version details
+			JSONValue thisVersionDetails = getCurrentVersionDetails(applicationVersion);
+			SysTime thisVersionPublishedDate = SysTime.fromISOExtString(thisVersionDetails["publishedDate"].str).toUTC();
+			thisVersionPublishedDate.fracSecs = Duration.zero;
+			log.vdebug("thisVersionPublishedDate: ", thisVersionPublishedDate);
+			
+			// the running version grace period is its release date + 1 month
+			SysTime thisVersionReleaseGracePeriod = thisVersionPublishedDate;
+			thisVersionReleaseGracePeriod = thisVersionReleaseGracePeriod.add!"months"(1);
+			log.vdebug("thisVersionReleaseGracePeriod: ", thisVersionReleaseGracePeriod);
+			
+			// is this running version obsolete ?
+			if (!displayObsolete) {
+				// if releaseGracePeriod > currentTime
+				// display an information warning that there is a new release available
+				if (releaseGracePeriod.toUnixTime() > currentTime.toUnixTime()) {
+					// inside release grace period ... set flag to false
+					displayObsolete = false;
+				} else {
+					// outside grace period
+					displayObsolete = true;
+				}
+			}
+			
+			// display version response
+			writeln();
+			if (!displayObsolete) {
+				// display the new version is available message
+				log.logAndNotify("INFO: A new onedrive client version is available. Please upgrade your client version when possible.");
+			} else {
+				// display the obsolete message
+				log.logAndNotify("WARNING: Your onedrive client version is now obsolete and unsupported. Please upgrade your client version.");
+			}
+			log.log("Current Application Version: ", applicationVersion);
+			log.log("Version Available:           ", latestVersion);
+			writeln();
+		}
+	}
 }
 
 // Unit Tests

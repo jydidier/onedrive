@@ -23,6 +23,9 @@ Perform authorization via two files passed in as \fBARG\fP in the format \fBauth
 The authorization URL is written to the \fBauthUrl\fP, then \fBonedrive\fP waits for
 the file \fBresponseUrl\fP to be present, and reads the response from that file.
 .TP
+\fB\-\-auth\-response\fP ARG
+Perform authentication not via interactive dialog but via providing the response url directly.
+.TP
 \fB\-\-check\-for\-nomount\fP
 Check for the presence of .nosync in the syncdir root. If found, do not perform sync.
 .br
@@ -37,6 +40,11 @@ Configuration file key: \fBcheck_nosync\fP (default: \fBfalse\fP)
 Number of children in a path that is locally removed which will be classified as a 'big data delete'
 .br
 Configuration file key: \fBclassify_as_big_delete\fP (default: \fB1000\fP)
+.TP
+\fB\-\-cleanup\-local\-files\fP
+Cleanup additional local files when using \-\-download-only. This will remove local data.
+.br
+Configuration file key: \fBcleanup_local_files\fP (default: \fBfalse\fP)
 .TP
 \fB\-\-confdir\fP ARG
 Set the directory used to store the configuration files
@@ -55,6 +63,11 @@ Configuration file key: \fBdebug_https\fP (default: \fBfalse\fP)
 \fB\-\-destination\-directory\fP ARG
 Destination directory for renamed or move on OneDrive \- no sync will be performed.
 .TP
+\fB\-\-disable\-download\-validation\fP
+Disable download validation when downloading from OneDrive
+.br
+Configuration file key: \fBdisable_download_validation\fP (default: \fBfalse\fP)
+.TP
 \fB\-\-disable\-notifications\fP
 Do not use desktop notifications in monitor mode
 .br
@@ -67,6 +80,9 @@ Configuration file key: \fBdisable_upload_validation\fP (default: \fBfalse\fP)
 .TP
 \fB\-\-display\-config\fP
 Display what options the client will use as currently configured \- no sync will be performed.
+.TP
+\fB\-\-display\-running\-config\fP
+Display what options the client has been configured to use on application startup.
 .TP
 \fB\-\-display\-sync\-status\fP
 Display the sync status of the client \- no sync will be performed.
@@ -89,10 +105,15 @@ Configuration file key: \fBenable_logging\fP (default: \fBfalse\fP)
 \fB\-\-force\fP
 Force the deletion of data when a 'big delete' is detected
 .TP
-\fB\-\-force\-http\-2\fP
-Force the use of HTTP/2 for all operations where applicable
+\fB\-\-force\-http\-11\fP
+Force the use of HTTP 1.1 for all operations
 .br
-Configuration file key: \fBforce_http_2\fP (default: \fBfalse\fP)
+Configuration file key: \fBforce_http_11\fP (default: \fBfalse\fP)
+.TP
+\fB\-\-force\-sync\fP
+Force a synchronization of a specific folder, only when using --synchronize --single-directory and ignore 
+.br
+all non-default skip_dir and skip_file rules
 .TP
 \fB\-\-get\-O365\-drive\-id\fP ARG
 Query and return the Office 365 Drive ID for a given Office 365 SharePoint Shared Library
@@ -116,11 +137,14 @@ defines the directory where logging output is saved to, needs to end with a slas
 .br
 Configuration file key: \fBlog_dir\fP (default: \fB/var/log/onedrive/\fP)
 .TP
-\fB\-\-min-notify-changes\fP
+\fB\-\-min\-notify\-changes\fP
 the minimum number of pending incoming changes necessary to trigger
 a desktop notification
 .br
 Configuration file key: \fBmin_notify_changes\fP (default: \fB5\fP)
+.TP
+\fB\-m \-\-modified\-by\fP ARG
+Display the last modified by details of a given path
 .TP
 \fB\-m \-\-monitor\fP
 Keep monitoring for local and remote changes
@@ -154,8 +178,8 @@ Configuration file key: \fBoperation_timeout\fP (default: \fB3600\fP)
 \fB\-\-print\-token\fP
 Print the access token, useful for debugging
 .TP
-\fB\-\-resync\fP
-Forget the last saved state, perform a full sync
+\fB\-\-reauth\fP
+Reauthenticate the client with OneDrive
 .TP
 \fB\-\-remove\-directory\fP ARG
 Remove a directory on OneDrive \- no sync will be performed.
@@ -164,6 +188,12 @@ Remove a directory on OneDrive \- no sync will be performed.
 Remove source file after successful transfer to OneDrive when using \-\-upload-only
 .br
 Configuration file key: \fBremove_source_files\fP (default: \fBfalse\fP)
+.TP
+\fB\-\-resync\fP
+Forget the last saved state, perform a full sync
+.TP
+\fB\-\-resync\-auth\fP
+Approve the use of performing a --resync action without needing CLI authorization
 .TP
 \fB\-\-single\-directory\fP ARG
 Specify a single local directory within the OneDrive root to sync.
@@ -197,9 +227,11 @@ Configuration file key: \fBskip_symlinks\fP (default: \fBfalse\fP)
 \fB\-\-source\-directory\fP ARG
 Source directory to rename or move on OneDrive \- no sync will be performed.
 .TP
+\fB\-\-space\-reservation\fP ARG
+The amount of disk space to reserve (in MB) to avoid 100% disk space utilisation
+.TP
 \fB\-\-sync\-root\-files\fP
 Sync all files in sync_dir root when using sync_list.
-
 .TP
 \fB\-\-sync\-shared\-folders\fP
 Sync OneDrive Business Shared Folders
@@ -230,6 +262,9 @@ enables even more verbose debug statements.
 .TP
 \fB\-\-version\fP
 Print the version and exit
+.TP
+\fB\-\-with\-editing\-perms\fP
+Create a read-write shareable link for an existing file on OneDrive when used with --create-share-link <file>
 .TP
 \fB\-h \-\-help\fP
 This help information.
